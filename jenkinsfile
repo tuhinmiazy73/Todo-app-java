@@ -1,0 +1,85 @@
+pipeline {
+    agent any
+
+    environment {
+        REPO_URL = 'https://github.com/tuhinmiazy73/Todo-app-java.git'
+        BRANCH = 'main'
+        DEPLOY_DIR = '/var/www/html/todo-app'
+        JAR_NAME = 'todo-enhanced-0.0.1-SNAPSHOT.jar'
+        WORKER_NODE_IP = '192.168.150.131'
+    }
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('SSH Login Test') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'JenkinsToWorkerSSH', keyFileVariable: 'SSH_KEY')]) {
+                    sh '''
+                        echo "🔐 Testing SSH connection to worker node..."
+                        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$WORKER_NODE_IP "echo ✅ SSH Login Successful"
+                    '''
+                }
+            }
+        }
+
+        stage('Checkout Source') {
+            steps {
+                echo "🔁 Cloning 'main' branch from GitHub..."
+                git branch: "$BRANCH", url: "$REPO_URL"
+            }
+        }
+
+        stage('Build with Maven') {
+            steps {
+                echo "🛠 Building the Java project..."
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Deploy to Remote Server') {
+            steps {
+                echo "🚀 Deploying .jar to remote server..."
+                withCredentials([sshUserPrivateKey(credentialsId: 'JenkinsToWorkerSSH', keyFileVariable: 'SSH_KEY')]) {
+                    sh '''
+                        echo "📦 Creating remote deploy directory..."
+                        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$WORKER_NODE_IP "mkdir -p $DEPLOY_DIR"
+
+                        echo "📤 Copying built .jar to remote server..."
+                        scp -i $SSH_KEY -o StrictHostKeyChecking=no target/$JAR_NAME root@$WORKER_NODE_IP:$DEPLOY_DIR/
+
+                        echo "🔁 Set execute permission to the jar file..."
+                        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$WORKER_NODE_IP "chmod +x $DEPLOY_DIR/$JAR_NAME"
+                        
+                        echo "💀 Stopping any existing instance of the app using systemd..."
+                        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$WORKER_NODE_IP "systemctl stop todo-app.service"
+
+                        echo "🚦 Starting the new instance of the app using systemd..."
+                        ssh -i $SSH_KEY -o StrictHostKeyChecking=no root@$WORKER_NODE_IP "systemctl start todo-app.service"
+                    '''
+                }
+            }
+        }
+
+        stage('Post-Deployment Info') {
+            steps {
+                echo "✅ Deployment completed successfully!"
+                echo "🌐 Access your app (if web): http://$WORKER_NODE_IP:8080"
+                echo "📄 Logs: ssh -i <your-key> root@$WORKER_NODE_IP 'tail -f $DEPLOY_DIR/app.log'"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "🎉 Pipeline executed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed. Check Jenkins logs and remote logs if needed."
+        }
+    }
+}
